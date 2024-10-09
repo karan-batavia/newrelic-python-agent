@@ -335,6 +335,30 @@ def kafka_settings():
     return settings
 
 
+def kombu_settings():
+    """Return a list of dict of settings for connecting to kombu.
+
+    Will return the correct settings, depending on which of the environments it
+    is running in. It attempts to set variables in the following order, where
+    later environments override earlier ones.
+
+        1. Local
+        2. Github Actions
+    """
+
+    host = "host.docker.internal" if "GITHUB_ACTIONS" in os.environ else "127.0.0.1"
+    base_port = 8082 if "GITHUB_ACTIONS" in os.environ else 8080
+    instances = 2
+    settings = [
+        {
+            "host": host,
+            "port": base_port + instance_num,
+        }
+        for instance_num in range(instances)
+    ]
+    return settings
+
+
 def gearman_settings():
     """Return a list of dict of settings for connecting to kafka.
 
