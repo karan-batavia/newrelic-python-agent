@@ -3127,6 +3127,12 @@ def _process_module_builtin_defaults():
     )
 
     _process_module_definition(
+        "kombu.messaging",
+        "newrelic.hooks.messagebroker_kombu",
+        "instrument_kombu_messaging",
+    )
+
+    _process_module_definition(
         "logging",
         "newrelic.hooks.logger_logging",
         "instrument_logging",

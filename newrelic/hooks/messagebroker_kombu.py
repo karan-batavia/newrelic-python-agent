@@ -13,8 +13,6 @@
 # limitations under the License.
 import sys
 
-from kombu.serializer import Serializer
-
 from newrelic.api.application import application_instance
 from newrelic.api.function_trace import FunctionTraceWrapper
 from newrelic.api.message_trace import MessageTrace
@@ -27,6 +25,7 @@ from newrelic.common.object_wrapper import (
     wrap_function_wrapper,
 )
 from newrelic.common.package_version_utils import get_package_version
+from newrelic.common.signature import bind_args
 
 HEARTBEAT_POLL = "MessageBroker/Kafka/Heartbeat/Poll"
 HEARTBEAT_SENT = "MessageBroker/Kafka/Heartbeat/Sent"
@@ -40,40 +39,40 @@ def _bind_send(topic, value=None, key=None, headers=None, partition=None, timest
     return topic, value, key, headers, partition, timestamp_ms
 
 
-def wrap_KafkaProducer_send(wrapped, instance, args, kwargs):
+def wrap_Producer_publish(wrapped, instance, args, kwargs):
     transaction = current_transaction()
 
     if transaction is None:
         return wrapped(*args, **kwargs)
 
-    topic, value, key, headers, partition, timestamp_ms = _bind_send(*args, **kwargs)
-    topic = topic or "Default"
-    headers = list(headers) if headers else []
+    bound_args = bind_args(wrapped, args, kwargs)
+    headers = bound_args["headers"]
+    headers = headers if headers else {}
+    value = bound_args["body"]
+    key = bound_args["routing_key"]
+    exchange = getattr(bound_args["exchange"], "name", "Default")
 
-    transaction.add_messagebroker_info(
-        "Kafka-Python", get_package_version("kombu-python") or get_package_version("kombu-python-ng")
-    )
+    transaction.add_messagebroker_info("Kombu", get_package_version("kombu"))
 
     with MessageTrace(
-        library="Kafka",
+        library="Kombu",
         operation="Produce",
-        destination_type="Topic",
-        destination_name=topic,
+        destination_type="Exchange",
+        destination_name=exchange,
         source=wrapped,
         terminal=False,
     ):
-        dt_headers = [(k, v.encode("utf-8")) for k, v in MessageTrace.generate_request_headers(transaction)]
+        dt_headers = {k: v.encode("utf-8") for k, v in MessageTrace.generate_request_headers(transaction)}
         # headers can be a list of tuples or a dict so convert to dict for consistency.
         if headers:
-            dt_headers.extend(headers)
+            dt_headers.update(headers)
 
-        if hasattr(instance, "config"):
-            for server_name in instance.config.get("bootstrap_servers", []):
-                transaction.record_custom_metric(f"MessageBroker/Kafka/Nodes/{server_name}/Produce/{topic}", 1)
+        # if hasattr(instance, "config"):
+        #    for server_name in instance.config.get("bootstrap_servers", []):
+        #        transaction.record_custom_metric(f"MessageBroker/Kafka/Nodes/{server_name}/Produce/{topic}", 1)
         try:
-            return wrapped(
-                topic, value=value, key=key, headers=dt_headers, partition=partition, timestamp_ms=timestamp_ms
-            )
+            bound_args["headers"] = dt_headers
+            return wrapped(**bound_args)
         except Exception:
             notice_error()
             raise
@@ -170,7 +169,7 @@ def wrap_kombuconsumer_next(wrapped, instance, args, kwargs):
     return record
 
 
-def wrap_KafkaProducer_init(wrapped, instance, args, kwargs):
+def wrap_Producer_init(wrapped, instance, args, kwargs):
     get_config_key = lambda key: kwargs.get(key, instance.DEFAULT_CONFIG[key])  # pylint: disable=C3001 # noqa: E731
 
     kwargs["key_serializer"] = wrap_serializer(
@@ -257,10 +256,10 @@ def metric_wrapper(metric_name, check_result=False):
     return _metric_wrapper
 
 
-def instrument_kombu_producer(module):
-    if hasattr(module, "KafkaProducer"):
-        wrap_function_wrapper(module, "KafkaProducer.__init__", wrap_KafkaProducer_init)
-        wrap_function_wrapper(module, "KafkaProducer.send", wrap_KafkaProducer_send)
+def instrument_kombu_messaging(module):
+    if hasattr(module, "Producer"):
+        # wrap_function_wrapper(module, "Producer.__init__", wrap_Producer_init)
+        wrap_function_wrapper(module, "Producer.publish", wrap_Producer_publish)
 
 
 def instrument_kombu_consumer_group(module):

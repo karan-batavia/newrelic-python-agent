@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import pytest
-from conftest import cache_kafka_consumer_headers
+
+# from conftest import cache_kafka_consumer_headers
 from testing_support.fixtures import reset_core_stats_engine, validate_attributes
 from testing_support.validators.validate_distributed_trace_accepted import (
     validate_distributed_trace_accepted,

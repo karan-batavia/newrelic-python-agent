@@ -17,7 +17,7 @@ import uuid
 
 import kombu
 import pytest
-from testing_support.db_settings import kombu_settings
+from testing_support.db_settings import rabbitmq_settings
 from testing_support.fixtures import (  # noqa: F401; pylint: disable=W0611
     collector_agent_registration_fixture,
     collector_available_fixture,
@@ -26,13 +26,13 @@ from testing_support.fixtures import (  # noqa: F401; pylint: disable=W0611
 from newrelic.api.transaction import current_transaction
 from newrelic.common.object_wrapper import transient_function_wrapper
 
-DB_SETTINGS = kombu_settings()[0]
-BOOTSTRAP_SERVER = f"{DB_SETTINGS['host']}:{DB_SETTINGS['port']}"
+DB_SETTINGS = rabbitmq_settings()[0]
+# BOOTSTRAP_SERVER = f"{DB_SETTINGS['host']}:{DB_SETTINGS['port']}"
 
 
 @pytest.fixture(scope="session")
 def connection():
-    with kombu.Connection(f"amqp://guest:guest@{DB_SETTINGS['host']}:{DB_SETTINGS['port']}") as conn:
+    with kombu.Connection(DB_SETTINGS["host"]) as conn:
         yield conn
 
 
@@ -59,14 +59,14 @@ def client_type(request):
     return request.param
 
 
-@pytest.fixture()
+@pytest.fixture
 def skip_if_not_serializing(client_type):
     if client_type == "no_serializer":
         pytest.skip("Only serializing clients supported.")
 
 
 @pytest.fixture(scope="function")
-def producer(client_type, json_serializer, json_callable_serializer, connection):
+def producer(client_type, connection):  # json_serializer, json_callable_serializer, connection):
     if client_type == "no_serializer":
         producer = connection.Producer()
     elif client_type == "serializer_function":
@@ -96,8 +96,8 @@ def consumer(group_id, producer, json_deserializer, json_callable_deserializer, 
     elif client_type == "serializer_object":
         consumer = connection.Consumer(queue, callbacks=[consume])
         #    key_deserializer=json_deserializer,
-    with consumer as conn:
-        yield consumer
+    with consumer as con:
+        yield con
 
 
 @pytest.fixture
@@ -107,12 +107,12 @@ def consume(body, message):
 
 @pytest.fixture
 def exchange():
-    return kombu.Exchange("media", "direct", durable=True)
+    return kombu.Exchange("exchange", "direct", durable=True)
 
 
 @pytest.fixture
 def queue(exchange):
-    return kombu.Queue("video", exchange=exchange, routing_key="video")
+    return kombu.Queue("bar", exchange=exchange, routing_key="bar")
 
 
 @pytest.fixture(scope="session")
@@ -172,61 +172,51 @@ def group_id():
     return str(uuid.uuid4())
 
 
-@pytest.fixture()
-def send_producer_message(topic, producer, serialize):
+@pytest.fixture
+def send_producer_message(producer, exchange, queue):
     def _test():
-        producer.send(topic, key=serialize("bar"), value=serialize({"foo": 1}))
-        producer.flush()
+        producer.publish({"foo": 1}, exchange=exchange, routing_key="bar", declare=[queue])
 
     return _test
 
 
-@pytest.fixture()
-def get_consumer_record(topic, send_producer_message, consumer, deserialize):
+@pytest.fixture
+def get_consumer_record(send_producer_message, connection, consumer):
     def _test():
         send_producer_message()
+        while True:
+            events = connection.drain_events()
 
-        record_count = 0
-
-        timeout = 10
-        attempts = 0
-        record = None
-        while not record and attempts < timeout:
-            for record in consumer:
-                assert deserialize(record.value) == {"foo": 1}
-                record_count += 1
-            attempts += 1
-
-        assert record_count == 1, f"Incorrect count of records consumed: {record_count}. Expected 1."
+        assert events
 
     return _test
 
 
-@transient_function_wrapper(kombu.producer.kombu, "KafkaProducer.send.__wrapped__")
-# Place transient wrapper underneath instrumentation
-def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
-    transaction = current_transaction()
+# @transient_function_wrapper(kombu.producer.kombu, "KafkaProducer.send.__wrapped__")
+## Place transient wrapper underneath instrumentation
+# def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
+#    transaction = current_transaction()
+#
+#    if transaction is None:
+#        return wrapped(*args, **kwargs)
+#
+#    ret = wrapped(*args, **kwargs)
+#    headers = kwargs.get("headers", [])
+#    headers = dict(headers)
+#    transaction._test_request_headers = headers
+#    return ret
 
-    if transaction is None:
-        return wrapped(*args, **kwargs)
 
-    ret = wrapped(*args, **kwargs)
-    headers = kwargs.get("headers", [])
-    headers = dict(headers)
-    transaction._test_request_headers = headers
-    return ret
-
-
-@transient_function_wrapper(kombu.consumer.group, "KafkaConsumer.__next__")
-# Place transient wrapper underneath instrumentation
-def cache_kombu_consumer_headers(wrapped, instance, args, kwargs):
-    record = wrapped(*args, **kwargs)
-    transaction = current_transaction()
-
-    if transaction is None:
-        return record
-
-    headers = record.headers
-    headers = dict(headers)
-    transaction._test_request_headers = headers
-    return record
+# @transient_function_wrapper(kombu.consumer.group, "KafkaConsumer.__next__")
+## Place transient wrapper underneath instrumentation
+# def cache_kombu_consumer_headers(wrapped, instance, args, kwargs):
+#    record = wrapped(*args, **kwargs)
+#    transaction = current_transaction()
+#
+#    if transaction is None:
+#        return record
+#
+#    headers = record.headers
+#    headers = dict(headers)
+#    transaction._test_request_headers = headers
+#    return record

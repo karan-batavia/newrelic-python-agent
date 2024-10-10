@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import pytest
-from conftest import cache_kafka_producer_headers
+
+# from conftest import cache_kafka_producer_headers
 from testing_support.validators.validate_messagebroker_headers import (
     validate_messagebroker_headers,
 )
@@ -29,17 +30,19 @@ from newrelic.api.function_trace import FunctionTrace
 from newrelic.common.object_names import callable_name
 
 
-def test_trace_metrics(topic, send_producer_message, expected_broker_metrics):
-    from kafka.version import __version__ as version
+def test_trace_metrics(send_producer_message):  # , expected_broker_metrics):
+    import kombu
 
-    scoped_metrics = [(f"MessageBroker/Kafka/Topic/Produce/Named/{topic}", 1)]
+    version = kombu.__version__
+
+    scoped_metrics = [(f"MessageBroker/Kombu/Exchange/Produce/Named/exchange", 1)]
     unscoped_metrics = scoped_metrics
 
     @validate_transaction_metrics(
         "test_producer:test_trace_metrics.<locals>.test",
         scoped_metrics=scoped_metrics,
         rollup_metrics=unscoped_metrics,
-        custom_metrics=[(f"Python/MessageBroker/Kafka-Python/{version}", 1)] + expected_broker_metrics,
+        custom_metrics=[(f"Python/MessageBroker/Kombu/{version}", 1)],
         background_task=True,
     )
     @background_task()
