@@ -52,13 +52,8 @@ def task_info(instance, *args, **kwargs):
         return UNKNOWN_TASK_NAME, None  # Failsafe
 
     # Task can be either a task instance or a signature, which subclasses dict, or an actual dict in some cases.
-    return UNKNOWN_TASK_NAME, None  # TODO
-    try:
-        task_name = getattr(task, "name", None) or task.get("task", UNKNOWN_TASK_NAME)
-        task_source = task
-    except Exception:
-        breakpoint()
-        raise
+    task_name = getattr(task, "name", None) or task.get("task", UNKNOWN_TASK_NAME)
+    task_source = task
 
     # Under mapping tasks, the root task name isn't descriptive enough so we append the
     # subtask name to differentiate between different mapping tasks
@@ -71,6 +66,11 @@ def task_info(instance, *args, **kwargs):
             pass
 
     return task_name, task_source
+
+
+class TaskWrapper(FunctionWrapper):
+    def run(self, *args, **kwargs):
+        return self.__call__(*args, **kwargs)
 
 
 def CeleryTaskWrapper(wrapped):
@@ -158,10 +158,6 @@ def CeleryTaskWrapper(wrapped):
     # to execute our __call__ method which in turn applies the wrapper
     # correctly before executing the task.
 
-    class TaskWrapper(FunctionWrapper):
-        def run(self, *args, **kwargs):
-            return self.__call__(*args, **kwargs)
-
     wrapped_task = TaskWrapper(wrapped, wrapper)
     # wrapped_task = FunctionWrapper(wrapped, wrapper)
     # Reset __module__ to be less transparent so celery detects our monkey-patching
@@ -203,13 +199,12 @@ def wrap_Celery__task_from_fun(wrapped, instance, args, kwargs):
         task = wrapped(*args, **kwargs)
 
         # If the task was already registered and wrapped, do not wrap again and simply return
-        registered_task = instance._tasks.get(task.name, None)
-        if getattr(registered_task, "_nr_last_object", None) is not None:
+        if isinstance(task.__call__, TaskWrapper):
             return task
 
-        # Otherwise we wrap the task, then set the registered version of the task to the wrapped version
-        task = CeleryTaskWrapper(task)
-        instance._tasks[task.name] = task
+        # Otherwise we wrap the task's __call__ method
+        task_type = type(task)
+        task_type.__call__ = CeleryTaskWrapper(task_type.__call__)
         return task
 
     return wrapped(*args, **kwargs)
@@ -296,7 +291,6 @@ def instrument_celery_app_base(module):
     # if hasattr(module, "Celery") and hasattr(module.Celery, "task"):
     #     wrap_function_wrapper(module, "Celery.task", wrap_Celery_task)
 
-    # breakpoint()
     if hasattr(module, "Celery") and hasattr(module.Celery, "_task_from_fun"):
         # module.Celery._task_from_fun.__call__ = CeleryTaskWrapper(module.Celery._task_from_fun.__call__)
         wrap_function_wrapper(module, "Celery._task_from_fun", wrap_Celery__task_from_fun)

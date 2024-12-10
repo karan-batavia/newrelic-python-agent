@@ -46,6 +46,11 @@ class CustomBaseTaskWithSuper(Task):
         return super().__call__(*args, **kwargs)
 
 
+class CustomClassBasedTask(Task):
+    def run(self, a, b):
+        return a + b
+
+
 @app.task
 def add(x, y):
     return x + y
