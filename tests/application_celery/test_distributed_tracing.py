@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from _target_application import add, assert_dt
 from testing_support.fixtures import override_application_settings
 from testing_support.validators.validate_transaction_count import (
     validate_transaction_count,
@@ -40,8 +39,8 @@ from newrelic.api.background_task import background_task
 )
 @validate_transaction_count(2)
 @background_task()
-def test_celery_task_distributed_tracing_enabled():
-    result = assert_dt.apply_async()
+def test_celery_task_distributed_tracing_enabled(application):
+    result = application.assert_dt.apply_async()
     result = result.get()
     assert result == 1
 
@@ -63,7 +62,7 @@ def test_celery_task_distributed_tracing_enabled():
 )
 @validate_transaction_count(2)
 @background_task()
-def test_celery_task_distributed_tracing_disabled():
-    result = add.apply_async((1, 2))
+def test_celery_task_distributed_tracing_disabled(application):
+    result = application.add.apply_async((1, 2))
     result = result.get()
     assert result == 3

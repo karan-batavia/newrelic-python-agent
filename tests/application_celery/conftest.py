@@ -31,6 +31,13 @@ collector_agent_registration = collector_agent_registration_fixture(
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def application():
+    import _target_application as application
+
+    yield application
+
+
 @pytest.fixture(scope="session")
 def celery_config():
     # Used by celery pytest plugin to configure Celery instance
@@ -47,5 +54,6 @@ def celery_worker_parameters():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def celery_worker_available(celery_session_worker):
+def celery_worker_available(application, celery_session_worker):
+    # Import application before requesting the celery fixtures to fix import issues
     yield celery_session_worker

@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import celery
 import pytest
-
-from _target_application import add, tsum
 from testing_support.validators.validate_code_level_metrics import (
     validate_code_level_metrics,
 )
@@ -24,9 +23,6 @@ from testing_support.validators.validate_transaction_count import (
 from testing_support.validators.validate_transaction_metrics import (
     validate_transaction_metrics,
 )
-
-import celery
-
 
 FORGONE_TASK_METRICS = [("Function/_target_application.add", None), ("Function/_target_application.tsum", None)]
 
@@ -49,11 +45,11 @@ def with_worker_optimizations(request, celery_worker_available):
 )
 @validate_code_level_metrics("_target_application", "add")
 @validate_transaction_count(1)
-def test_celery_task_call():
+def test_celery_task_call(application):
     """
     Executes task in local process and returns the result directly.
     """
-    result = add(3, 4)
+    result = application.add(3, 4)
     assert result == 7
 
 
@@ -66,11 +62,11 @@ def test_celery_task_call():
 )
 @validate_code_level_metrics("_target_application", "add")
 @validate_transaction_count(1)
-def test_celery_task_apply():
+def test_celery_task_apply(application):
     """
     Executes task in local process and returns an EagerResult.
     """
-    result = add.apply((3, 4))
+    result = application.add.apply((3, 4))
     result = result.get()
     assert result == 7
 
@@ -84,11 +80,11 @@ def test_celery_task_apply():
 )
 @validate_code_level_metrics("_target_application", "add")
 @validate_transaction_count(1)
-def test_celery_task_delay():
+def test_celery_task_delay(application):
     """
     Executes task on worker process and returns an AsyncResult.
     """
-    result = add.delay(3, 4)
+    result = application.add.delay(3, 4)
     result = result.get()
     assert result == 7
 
@@ -102,11 +98,11 @@ def test_celery_task_delay():
 )
 @validate_code_level_metrics("_target_application", "add")
 @validate_transaction_count(1)
-def test_celery_task_apply_async():
+def test_celery_task_apply_async(application):
     """
     Executes task on worker process and returns an AsyncResult.
     """
-    result = add.apply_async((3, 4))
+    result = application.add.apply_async((3, 4))
     result = result.get()
     assert result == 7
 
@@ -138,11 +134,11 @@ def test_celery_app_send_task(celery_session_app):
 )
 @validate_code_level_metrics("_target_application", "add")
 @validate_transaction_count(1)
-def test_celery_task_signature():
+def test_celery_task_signature(application):
     """
     Executes task on worker process and returns an AsyncResult.
     """
-    result = add.s(3, 4).delay()
+    result = application.add.s(3, 4).delay()
     result = result.get()
     assert result == 7
 
@@ -165,11 +161,11 @@ def test_celery_task_signature():
 @validate_code_level_metrics("_target_application", "add")
 @validate_code_level_metrics("_target_application", "add", index=-2)
 @validate_transaction_count(2)
-def test_celery_task_link():
+def test_celery_task_link(application):
     """
     Executes multiple tasks on worker process and returns an AsyncResult.
     """
-    result = add.apply_async((3, 4), link=[add.s(5)])
+    result = application.add.apply_async((3, 4), link=[application.add.s(5)])
     result = result.get()
     assert result == 7  # Linked task result won't be returned
 
@@ -192,11 +188,11 @@ def test_celery_task_link():
 @validate_code_level_metrics("_target_application", "add")
 @validate_code_level_metrics("_target_application", "add", index=-2)
 @validate_transaction_count(2)
-def test_celery_chain():
+def test_celery_chain(application):
     """
     Executes multiple tasks on worker process and returns an AsyncResult.
     """
-    result = celery.chain(add.s(3, 4), add.s(5))()
+    result = celery.chain(application.add.s(3, 4), application.add.s(5))()
 
     result = result.get()
     assert result == 12
@@ -220,11 +216,11 @@ def test_celery_chain():
 @validate_code_level_metrics("_target_application", "add")
 @validate_code_level_metrics("_target_application", "add", index=-2)
 @validate_transaction_count(2)
-def test_celery_group():
+def test_celery_group(application):
     """
     Executes multiple tasks on worker process and returns an AsyncResult.
     """
-    result = celery.group(add.s(3, 4), add.s(1, 2))()
+    result = celery.group(application.add.s(3, 4), application.add.s(1, 2))()
     result = result.get()
     assert result == [7, 3]
 
@@ -256,11 +252,11 @@ def test_celery_group():
 @validate_code_level_metrics("_target_application", "add", index=-2)
 @validate_code_level_metrics("_target_application", "add", index=-3)
 @validate_transaction_count(3)
-def test_celery_chord():
+def test_celery_chord(application):
     """
     Executes 2 add tasks, followed by a tsum task on the worker process and returns an AsyncResult.
     """
-    result = celery.chord([add.s(3, 4), add.s(1, 2)])(tsum.s())
+    result = celery.chord([application.add.s(3, 4), application.add.s(1, 2)])(application.tsum.s())
     result = result.get()
     assert result == 10
 
@@ -274,11 +270,11 @@ def test_celery_chord():
 )
 @validate_code_level_metrics("_target_application", "tsum", count=3)
 @validate_transaction_count(1)
-def test_celery_task_map():
+def test_celery_task_map(application):
     """
     Executes map task on worker process with original task as a subtask and returns an AsyncResult.
     """
-    result = tsum.map([(3, 4), (1, 2)]).apply()
+    result = application.tsum.map([(3, 4), (1, 2)]).apply()
     result = result.get()
     assert result == [7, 3]
 
@@ -292,11 +288,11 @@ def test_celery_task_map():
 )
 @validate_code_level_metrics("_target_application", "add", count=3)
 @validate_transaction_count(1)
-def test_celery_task_starmap():
+def test_celery_task_starmap(application):
     """
     Executes starmap task on worker process with original task as a subtask and returns an AsyncResult.
     """
-    result = add.starmap([(3, 4), (1, 2)]).apply_async()
+    result = application.add.starmap([(3, 4), (1, 2)]).apply_async()
     result = result.get()
     assert result == [7, 3]
 
@@ -319,10 +315,10 @@ def test_celery_task_starmap():
 @validate_code_level_metrics("_target_application", "add", count=2)
 @validate_code_level_metrics("_target_application", "add", count=2, index=-2)
 @validate_transaction_count(2)
-def test_celery_task_chunks():
+def test_celery_task_chunks(application):
     """
     Executes multiple tasks on worker process and returns an AsyncResult.
     """
-    result = add.chunks([(3, 4), (1, 2)], n=1).apply_async()
+    result = application.add.chunks([(3, 4), (1, 2)], n=1).apply_async()
     result = result.get()
     assert result == [[7], [3]]

@@ -35,9 +35,10 @@ class CustomBaseTask(Task):
 
 
 # Despite Celery's documentation urging users to not
-# call super().__call__ in custom tasks (as shown here:
-# https://docs.celeryq.dev/en/latest/userguide/application.html#abstract-tasks
-# under the tip line) this has been accounted for in
+# call super().__call__ in custom tasks (as shown here
+# under the tip line:
+# https://docs.celeryq.dev/en/latest/userguide/application.html#abstract-tasks)
+# This has been accounted for in
 # the code base.  This is a test to ensure that our
 # instrumentation still works in this case as well
 class CustomBaseTaskWithSuper(Task):

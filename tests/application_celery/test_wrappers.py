@@ -12,17 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from _target_application import add
+# from _target_application import add
 
 import celery
 
 from newrelic.common.object_wrapper import _NRBoundFunctionWrapper
 
-
 FORGONE_TASK_METRICS = [("Function/_target_application.add", None), ("Function/_target_application.tsum", None)]
 
 
-def test_task_wrapping_detection():
+def test_task_wrapping_detection(application):
     """
     Ensure celery detects our monkeypatching properly and will run our instrumentation
     on __call__ and runs that instead of micro-optimizing it away to a run() call.
@@ -30,7 +29,8 @@ def test_task_wrapping_detection():
     If this is not working, most other tests in this file will fail as the different ways
     of running celery tasks will not all run our instrumentation.
     """
-    assert celery.app.trace.task_has_custom(add, "__call__")
+    assert celery.app.trace.task_has_custom(application.add, "__call__")
+    assert celery.app.trace.task_has_custom(application.custom_base_task_add, "__call__")
 
 
 def test_worker_optimizations_preserve_instrumentation(celery_worker_available):
@@ -38,9 +38,9 @@ def test_worker_optimizations_preserve_instrumentation(celery_worker_available):
 
     celery.app.trace.reset_worker_optimizations()
     assert is_instrumented(), "Instrumentation not initially applied."
-    
+
     celery.app.trace.setup_worker_optimizations(celery_worker_available.app)
     assert is_instrumented(), "setup_worker_optimizations removed instrumentation."
-    
+
     celery.app.trace.reset_worker_optimizations()
     assert is_instrumented(), "reset_worker_optimizations removed instrumentation."

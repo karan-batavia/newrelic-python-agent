@@ -33,6 +33,7 @@ from newrelic.common.object_wrapper import (
     _NRBoundFunctionWrapper,
     wrap_function_wrapper,
 )
+from newrelic.common.signature import bind_args
 from newrelic.core.agent import shutdown_agent
 
 UNKNOWN_TASK_NAME = "<Unknown Task>"
@@ -48,11 +49,16 @@ def task_info(instance, *args, **kwargs):
     elif "task" in kwargs:
         task = kwargs["task"]
     else:
-        return UNKNOWN_TASK_NAME  # Failsafe
+        return UNKNOWN_TASK_NAME, None  # Failsafe
 
     # Task can be either a task instance or a signature, which subclasses dict, or an actual dict in some cases.
-    task_name = getattr(task, "name", None) or task.get("task", UNKNOWN_TASK_NAME)
-    task_source = task
+    return UNKNOWN_TASK_NAME, None  # TODO
+    try:
+        task_name = getattr(task, "name", None) or task.get("task", UNKNOWN_TASK_NAME)
+        task_source = task
+    except Exception:
+        breakpoint()
+        raise
 
     # Under mapping tasks, the root task name isn't descriptive enough so we append the
     # subtask name to differentiate between different mapping tasks
@@ -190,16 +196,21 @@ def instrument_celery_app_task(module):
 
 
 def wrap_Celery__task_from_fun(wrapped, instance, args, kwargs):
-    # breakpoint()
-    def bind__task_from_fun(fun, name=None, base=None, bind=None, *args, **kwargs):
-        return fun, name, base, bind
+    bound_args = bind_args(wrapped, args, kwargs)
+    base = bound_args.get("base", None)
+    if base is not None:
+        # Call underlying function first and optionally wrap result
+        task = wrapped(*args, **kwargs)
 
-    func, name, base_class, bind = bind__task_from_fun(*args, **kwargs)
+        # If the task was already registered and wrapped, do not wrap again and simply return
+        registered_task = instance._tasks.get(task.name, None)
+        if getattr(registered_task, "_nr_last_object", None) is not None:
+            return task
 
-    # breakpoint()
-    run_function = func if bind else staticmethod(func)
-
-    run_function = CeleryTaskWrapper(run_function)
+        # Otherwise we wrap the task, then set the registered version of the task to the wrapped version
+        task = CeleryTaskWrapper(task)
+        instance._tasks[task.name] = task
+        return task
 
     return wrapped(*args, **kwargs)
 
@@ -251,9 +262,6 @@ def wrap_worker_optimizations(wrapped, instance, args, kwargs):
     # except Exception:
     #     BaseTask = None
 
-    # POTENTIAL TO DO:
-    # Maybe go through Celery._tasks and uninstrument all tasks??
-
     try:
         from celery.app.task import Task
 
@@ -288,10 +296,10 @@ def instrument_celery_app_base(module):
     # if hasattr(module, "Celery") and hasattr(module.Celery, "task"):
     #     wrap_function_wrapper(module, "Celery.task", wrap_Celery_task)
 
-    breakpoint()
+    # breakpoint()
     if hasattr(module, "Celery") and hasattr(module.Celery, "_task_from_fun"):
-        module.Celery._task_from_fun.__call__ = CeleryTaskWrapper(module.Celery._task_from_fun.__call__)
-        # wrap_function_wrapper(module, "Celery._task_from_fun", wrap_Celery__task_from_fun)
+        # module.Celery._task_from_fun.__call__ = CeleryTaskWrapper(module.Celery._task_from_fun.__call__)
+        wrap_function_wrapper(module, "Celery._task_from_fun", wrap_Celery__task_from_fun)
 
     if hasattr(module, "Celery") and hasattr(module.Celery, "send_task"):
         wrap_function_wrapper(module, "Celery.send_task", wrap_Celery_send_task)
