@@ -157,6 +157,7 @@ def CeleryTaskWrapper(wrapped):
             return self.__call__(*args, **kwargs)
 
     wrapped_task = TaskWrapper(wrapped, wrapper)
+    # wrapped_task = FunctionWrapper(wrapped, wrapper)
     # Reset __module__ to be less transparent so celery detects our monkey-patching
     wrapped_task.__module__ = CeleryTaskWrapper.__module__
 
@@ -166,7 +167,8 @@ def CeleryTaskWrapper(wrapped):
 def instrument_celery_app_task(module):
     # Triggered for both 'celery.app.task' and 'celery.task.base'.
 
-    if hasattr(module, "BaseTask"):
+    # if hasattr(module, "BaseTask"):
+    if hasattr(module, "Task"):
         # Need to add a wrapper for background task entry point.
 
         # In Celery 2.2 the 'BaseTask' class actually resided in the
@@ -181,24 +183,41 @@ def instrument_celery_app_task(module):
         # the task doesn't pass through it. For Celery 2.5+ need to wrap
         # the tracer instead.
 
-        if module.BaseTask.__module__ == module.__name__:
-            module.BaseTask.__call__ = CeleryTaskWrapper(module.BaseTask.__call__)
+        if module.Task.__module__ == module.__name__:
+            module.Task.__call__ = CeleryTaskWrapper(module.Task.__call__)
+        # if module.BaseTask.__module__ == module.__name__:
+        #     module.BaseTask.__call__ = CeleryTaskWrapper(module.BaseTask.__call__)
 
 
-def wrap_Celery_task(wrapped, instance, args, kwargs):
-    # If a custom base class is not being used, we can skip this
-    # because the original base class is already wrapped
-    if not kwargs.get("base", None):
-        return wrapped(*args, **kwargs)
+def wrap_Celery__task_from_fun(wrapped, instance, args, kwargs):
+    # breakpoint()
+    def bind__task_from_fun(fun, name=None, base=None, bind=None, *args, **kwargs):
+        return fun, name, base, bind
 
-    custom_base_task_class = kwargs.get("base")
+    func, name, base_class, bind = bind__task_from_fun(*args, **kwargs)
 
-    try:
-        custom_base_task_class.__call__ = CeleryTaskWrapper(custom_base_task_class.__call__)
-    except:
-        pass
+    # breakpoint()
+    run_function = func if bind else staticmethod(func)
+
+    run_function = CeleryTaskWrapper(run_function)
 
     return wrapped(*args, **kwargs)
+
+
+# def wrap_Celery_task(wrapped, instance, args, kwargs):
+#     # If a custom base class is not being used, we can skip this
+#     # because the original base class is already wrapped
+#     custom_base_task_class = kwargs.get("base", None)
+
+#     if not custom_base_task_class:
+#         return wrapped(*args, **kwargs)
+
+#     try:
+#         custom_base_task_class.__call__ = CeleryTaskWrapper(custom_base_task_class.__call__)
+#     except:
+#         pass
+
+#     return wrapped(*args, **kwargs)
 
 
 def wrap_Celery_send_task(wrapped, instance, args, kwargs):
@@ -224,27 +243,55 @@ def wrap_Celery_send_task(wrapped, instance, args, kwargs):
 
 def wrap_worker_optimizations(wrapped, instance, args, kwargs):
     # Attempt to uninstrument BaseTask before stack protection is installed or uninstalled
-    try:
-        from celery.app.task import BaseTask
+    # try:
+    #     from celery.app.task import BaseTask
 
-        if isinstance(BaseTask.__call__, _NRBoundFunctionWrapper):
-            BaseTask.__call__ = BaseTask.__call__.__wrapped__
+    #     if isinstance(BaseTask.__call__, _NRBoundFunctionWrapper):
+    #         BaseTask.__call__ = BaseTask.__call__.__wrapped__
+    # except Exception:
+    #     BaseTask = None
+
+    # POTENTIAL TO DO:
+    # Maybe go through Celery._tasks and uninstrument all tasks??
+
+    try:
+        from celery.app.task import Task
+
+        if isinstance(Task.__call__, _NRBoundFunctionWrapper):
+            Task.__call__ = Task.__call__.__wrapped__
     except Exception:
-        BaseTask = None
+        Task = None
+
+    # # Similarly, if a custom base class is used, an
+    # # attempt needs to be made to uninstrument this as well:
+    # # custom_base_task_class = getattr(instance, "base", None)
+    # custom_base_task_class = kwargs.get("base", None)
+    # if custom_base_task_class and isinstance(custom_base_task_class.__call__, _NRBoundFunctionWrapper):
+    #     custom_base_task_class.__call__ = custom_base_task_class.__call__.__wrapped__
 
     # Allow metaprogramming to run
     result = wrapped(*args, **kwargs)
 
-    # Rewrap finalized BaseTask
-    if BaseTask:  # Ensure imports succeeded
-        BaseTask.__call__ = CeleryTaskWrapper(BaseTask.__call__)
+    # Rewrap finalized BaseTask and custom base task class, if applicable
+    # if BaseTask:  # Ensure imports succeeded
+    #     BaseTask.__call__ = CeleryTaskWrapper(BaseTask.__call__)
+    if Task:  # Ensure imports succeeded
+        Task.__call__ = CeleryTaskWrapper(Task.__call__)
+
+    # if custom_base_task_class:
+    #     custom_base_task_class.__call__ = CeleryTaskWrapper(custom_base_task_class.__call__)
 
     return result
 
 
 def instrument_celery_app_base(module):
-    if hasattr(module, "Celery") and hasattr(module.Celery, "task"):
-        wrap_function_wrapper(module, "Celery.task", wrap_Celery_task)
+    # if hasattr(module, "Celery") and hasattr(module.Celery, "task"):
+    #     wrap_function_wrapper(module, "Celery.task", wrap_Celery_task)
+
+    breakpoint()
+    if hasattr(module, "Celery") and hasattr(module.Celery, "_task_from_fun"):
+        module.Celery._task_from_fun.__call__ = CeleryTaskWrapper(module.Celery._task_from_fun.__call__)
+        # wrap_function_wrapper(module, "Celery._task_from_fun", wrap_Celery__task_from_fun)
 
     if hasattr(module, "Celery") and hasattr(module.Celery, "send_task"):
         wrap_function_wrapper(module, "Celery.send_task", wrap_Celery_send_task)

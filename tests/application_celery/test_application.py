@@ -15,6 +15,7 @@
 from _target_application import (
     add,
     custom_base_task_add,
+    custom_base_task_with_super_add,
     nested_add,
     shared_task_add,
     tsum,
@@ -50,22 +51,6 @@ def test_celery_task_as_function_trace():
     assert result == 7
 
 
-# Skip any tests involving worker_optimizations for custom base classes
-# https://github.com/celery/celery/blob/main/celery/app/trace.py#L713
-@validate_transaction_metrics(
-    name="test_application:test_celery_custom_base_task",
-    background_task=True,
-)
-@validate_code_level_metrics("test_application", "test_celery_custom_base_task")
-@background_task()
-def test_celery_custom_base_task():
-    """
-    Executes custom base task in local process and returns the result directly.
-    """
-    result = custom_base_task_add(3, 4)
-    assert result == 7
-
-
 @validate_transaction_metrics(name="_target_application.add", group="Celery", scoped_metrics=[], background_task=True)
 @validate_code_level_metrics("_target_application", "add")
 def test_celery_task_as_background_task():
@@ -76,6 +61,70 @@ def test_celery_task_as_background_task():
 
     """
     result = add(3, 4)
+    assert result == 7
+
+
+@validate_transaction_metrics(
+    name="test_application:test_custom_celery_task_as_function_trace",
+    scoped_metrics=[("Function/_target_application.custom_base_task_add", 1)],
+    background_task=True,
+)
+@validate_code_level_metrics("_target_application", "custom_base_task_add")
+@background_task()
+def test_custom_celery_task_as_function_trace():
+    """
+    Calling custom_base_task_add() inside a transaction means the
+    agent will record custom_base_task_add() as a FunctionTrace.
+
+    """
+    result = custom_base_task_add(3, 4)
+    assert result == 7
+
+
+@validate_transaction_metrics(
+    name="_target_application.custom_base_task_add", group="Celery", scoped_metrics=[], background_task=True
+)
+@validate_code_level_metrics("_target_application", "custom_base_task_add")
+def test_custom_celery_task_as_background_task():
+    """
+    Calling custom_base_task_add() outside of a transaction means the agent will create
+    a background transaction (with a group of 'Celery') and record custom_base_task_add()
+    as a background task.
+
+    """
+    result = custom_base_task_add(3, 4)
+    assert result == 7
+
+
+@validate_transaction_metrics(
+    name="test_application:test_custom_celery_task_as_function_trace",
+    scoped_metrics=[("Function/_target_application.custom_base_task_with_super_add", 1)],
+    background_task=True,
+)
+@validate_code_level_metrics("_target_application", "custom_base_task_with_super_add")
+@background_task()
+def test_custom_celery_task_with_super_as_function_trace():
+    """
+    Calling custom_base_task_with_super_add() inside a transaction means the
+    agent will record custom_base_task_with_super_add() as a FunctionTrace.
+
+    """
+    result = custom_base_task_with_super_add(3, 4)
+    assert result == 7
+
+
+@validate_transaction_metrics(
+    name="_target_application.custom_base_task_with_super_add", group="Celery", scoped_metrics=[], background_task=True
+)
+@validate_code_level_metrics("_target_application", "custom_base_task_with_super_add")
+def test_custom_celery_task_with_super_as_background_task():
+    """
+    Calling custom_base_task_with_super_add() outside of a transaction means the agent will create
+    a background transaction (with a group of 'Celery') and record custom_base_task_with_super_add()
+    as a background task.
+
+    """
+    result = custom_base_task_with_super_add(3, 4)
     assert result == 7
 
 
