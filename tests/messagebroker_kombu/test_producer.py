@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import pytest
-
-# from conftest import cache_kafka_producer_headers
+from conftest import cache_kombu_producer_headers
+from kombu.exceptions import EncodeError
 from testing_support.validators.validate_messagebroker_headers import (
     validate_messagebroker_headers,
 )
@@ -35,7 +35,10 @@ def test_trace_metrics(send_producer_message):  # , expected_broker_metrics):
 
     version = kombu.__version__
 
-    scoped_metrics = [(f"MessageBroker/Kombu/Exchange/Produce/Named/exchange", 1)]
+    scoped_metrics = [
+        ("MessageBroker/Kombu/Exchange/Produce/Named/exchange", 1),
+        # (f"MessageBroker/Kafka/Nodes/Exchange/Produce/topic", 1),
+    ]
     unscoped_metrics = scoped_metrics
 
     @validate_transaction_metrics(
@@ -52,18 +55,18 @@ def test_trace_metrics(send_producer_message):  # , expected_broker_metrics):
     test()
 
 
-def test_distributed_tracing_headers(topic, send_producer_message, expected_broker_metrics):
+def test_distributed_tracing_headers(exchange, send_producer_message):  # , expected_broker_metrics):
     @validate_transaction_metrics(
         "test_producer:test_distributed_tracing_headers.<locals>.test",
         rollup_metrics=[
             ("Supportability/TraceContext/Create/Success", 1),
             ("Supportability/DistributedTrace/CreatePayload/Success", 1),
-        ]
-        + expected_broker_metrics,
+        ],
+        # + expected_broker_metrics,
         background_task=True,
     )
     @background_task()
-    @cache_kafka_producer_headers
+    @cache_kombu_producer_headers
     @validate_messagebroker_headers
     def test():
         send_producer_message()
@@ -71,18 +74,18 @@ def test_distributed_tracing_headers(topic, send_producer_message, expected_brok
     test()
 
 
-def test_distributed_tracing_headers_under_terminal(topic, send_producer_message, expected_broker_metrics):
+def test_distributed_tracing_headers_under_terminal(exchange, send_producer_message):  # , expected_broker_metrics):
     @validate_transaction_metrics(
         "test_distributed_tracing_headers_under_terminal",
         rollup_metrics=[
             ("Supportability/TraceContext/Create/Success", 1),
             ("Supportability/DistributedTrace/CreatePayload/Success", 1),
-        ]
-        + expected_broker_metrics,
+        ],
+        # + expected_broker_metrics,
         background_task=True,
     )
     @background_task(name="test_distributed_tracing_headers_under_terminal")
-    @cache_kafka_producer_headers
+    @cache_kombu_producer_headers
     @validate_messagebroker_headers
     def test():
         with FunctionTrace(name="terminal_trace", terminal=True):
@@ -91,16 +94,13 @@ def test_distributed_tracing_headers_under_terminal(topic, send_producer_message
     test()
 
 
-def test_producer_errors(topic, producer, monkeypatch):
-    monkeypatch.setitem(producer.config, "value_serializer", None)
-    monkeypatch.setitem(producer.config, "key_serializer", None)
+def test_producer_errors(exchange, producer, queue, monkeypatch):
 
-    @validate_transaction_errors([callable_name(AssertionError)])
+    @validate_transaction_errors([callable_name(EncodeError)])
     @background_task()
     def test():
-        with pytest.raises(AssertionError):
-            producer.send(topic, value=object())
-            producer.flush()
+        with pytest.raises(EncodeError):
+            producer.publish({"foo": object()}, exchange=exchange, routing_key="bar", declare=[queue])
 
     test()
 

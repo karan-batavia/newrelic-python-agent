@@ -17,6 +17,7 @@ import uuid
 
 import kombu
 import pytest
+from kombu import messaging
 from testing_support.db_settings import rabbitmq_settings
 from testing_support.fixtures import (  # noqa: F401; pylint: disable=W0611
     collector_agent_registration_fixture,
@@ -192,19 +193,19 @@ def get_consumer_record(send_producer_message, connection, consumer):
     return _test
 
 
-# @transient_function_wrapper(kombu.producer.kombu, "KafkaProducer.send.__wrapped__")
-## Place transient wrapper underneath instrumentation
-# def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
-#    transaction = current_transaction()
-#
-#    if transaction is None:
-#        return wrapped(*args, **kwargs)
-#
-#    ret = wrapped(*args, **kwargs)
-#    headers = kwargs.get("headers", [])
-#    headers = dict(headers)
-#    transaction._test_request_headers = headers
-#    return ret
+@transient_function_wrapper(messaging, "Producer.publish.__wrapped__")
+# Place transient wrapper underneath instrumentation
+def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
+    transaction = current_transaction()
+
+    if transaction is None:
+        return wrapped(*args, **kwargs)
+
+    ret = wrapped(*args, **kwargs)
+
+    headers = kwargs.get("headers", [])
+    transaction._test_request_headers = headers
+    return ret
 
 
 # @transient_function_wrapper(kombu.consumer.group, "KafkaConsumer.__next__")

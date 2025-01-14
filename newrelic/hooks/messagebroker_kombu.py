@@ -67,6 +67,7 @@ def wrap_Producer_publish(wrapped, instance, args, kwargs):
         if headers:
             dt_headers.update(headers)
 
+        # instance.connection.host
         # if hasattr(instance, "config"):
         #    for server_name in instance.config.get("bootstrap_servers", []):
         #        transaction.record_custom_metric(f"MessageBroker/Kafka/Nodes/{server_name}/Produce/{topic}", 1)
