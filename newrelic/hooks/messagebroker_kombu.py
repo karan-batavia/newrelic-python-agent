@@ -79,25 +79,13 @@ def wrap_Producer_publish(wrapped, instance, args, kwargs):
             raise
 
 
-def wrap_kombuconsumer_next(wrapped, instance, args, kwargs):
+def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
     if hasattr(instance, "_nr_transaction") and not instance._nr_transaction.stopped:
         instance._nr_transaction.__exit__(*sys.exc_info())
 
-    try:
-        record = wrapped(*args, **kwargs)
-    except Exception as e:
-        # StopIteration is an expected error, indicating the end of an iterable,
-        # that should not be captured.
-        if not isinstance(e, StopIteration):
-            if current_transaction():
-                # Report error on existing transaction if there is one
-                notice_error()
-            else:
-                # Report error on application
-                notice_error(application=application_instance(activate=False))
-        raise
-
-    if record:
+    bound_args = bind_args(wrapped, args, kwargs)
+    message = bound_args["message"]
+    if message:
         # This iterator can be called either outside of a transaction, or
         # within the context of an existing transaction.  There are 3
         # possibilities we need to handle: (Note that this is similar to
@@ -118,12 +106,14 @@ def wrap_kombuconsumer_next(wrapped, instance, args, kwargs):
         #
         #      Since it's not running inside of an existing transaction, we
         #      want to create a new background transaction for it.
-
-        library = "Kafka"
-        destination_type = "Topic"
-        destination_name = record.topic
-        received_bytes = len(str(record.value).encode("utf-8"))
+        body = getattr(message, "body", None)
+        key = getattr(message, "delivery_info", {}).get("routing_key")
+        library = "Kombu"
+        destination_type = "Exchange"
+        destination_name = getattr(message, "delivery_info", {}).get("exchange")
+        value = len(str(body).encode("utf-8"))
         message_count = 1
+        received_bytes = getattr(message, "body_received", None)
 
         transaction = current_transaction(active_only=False)
 
@@ -133,19 +123,18 @@ def wrap_kombuconsumer_next(wrapped, instance, args, kwargs):
                 library=library,
                 destination_type=destination_type,
                 destination_name=destination_name,
-                headers=dict(record.headers),
-                transport_type="Kafka",
-                routing_key=record.key,
+                headers=dict(getattr(message, "headers", {})),
+                transport_type="Kombu",
+                routing_key=key,
                 source=wrapped,
             )
             instance._nr_transaction = transaction
             transaction.__enter__()  # pylint: disable=C2801
 
             # Obtain consumer client_id to send up as agent attribute
-            if hasattr(instance, "config") and "client_id" in instance.config:
-                client_id = instance.config["client_id"]
-                transaction._add_agent_attribute("kombu.consume.client_id", client_id)
-
+            if hasattr(message, "channel") and hasattr(message.channel, "channel_id"):
+                channel_id = message.channel.channel_id
+                transaction._add_agent_attribute("kombu.consume.channel_id", channel_id)
             transaction._add_agent_attribute("kombu.consume.byteCount", received_bytes)
 
         transaction = current_transaction()
@@ -158,16 +147,25 @@ def wrap_kombuconsumer_next(wrapped, instance, args, kwargs):
             name = f"Named/{destination_name}"
             transaction.record_custom_metric(f"{group}/{name}/Received/Bytes", received_bytes)
             transaction.record_custom_metric(f"{group}/{name}/Received/Messages", message_count)
-            if hasattr(instance, "config"):
-                for server_name in instance.config.get("bootstrap_servers", []):
-                    transaction.record_custom_metric(
-                        f"MessageBroker/Kafka/Nodes/{server_name}/Consume/{destination_name}", 1
-                    )
-            transaction.add_messagebroker_info(
-                "Kafka-Python", get_package_version("kombu-python") or get_package_version("kombu-python-ng")
-            )
+            # if hasattr(instance, "config"):
+            #    for server_name in instance.config.get("bootstrap_servers", []):
+            #        transaction.record_custom_metric(
+            #            f"MessageBroker/Kafka/Nodes/{server_name}/Consume/{destination_name}", 1
+            #        )
+            transaction.add_messagebroker_info("Kombu", get_package_version("kombu"))
 
-    return record
+    try:
+        return_val = wrapped(*args, **kwargs)
+    except Exception as e:
+        if current_transaction():
+            # Report error on existing transaction if there is one
+            notice_error()
+        else:
+            # Report error on application
+            notice_error(application=application_instance(activate=False))
+        raise
+
+    return return_val
 
 
 def wrap_Producer_init(wrapped, instance, args, kwargs):
@@ -261,11 +259,8 @@ def instrument_kombu_messaging(module):
     if hasattr(module, "Producer"):
         # wrap_function_wrapper(module, "Producer.__init__", wrap_Producer_init)
         wrap_function_wrapper(module, "Producer.publish", wrap_Producer_publish)
-
-
-def instrument_kombu_consumer_group(module):
-    if hasattr(module, "KafkaConsumer"):
-        wrap_function_wrapper(module, "KafkaConsumer.__next__", wrap_kombuconsumer_next)
+    if hasattr(module, "Consumer"):
+        wrap_function_wrapper(module, "Consumer._receive_callback", wrap_consumer_recieve_callback)
 
 
 def instrument_kombu_heartbeat(module):

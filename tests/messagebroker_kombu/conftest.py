@@ -85,7 +85,9 @@ def producer(client_type, connection):  # json_serializer, json_callable_seriali
 
 
 @pytest.fixture(scope="function")
-def consumer(group_id, producer, json_deserializer, json_callable_deserializer, connection, queue, consume):
+def consumer(
+    client_type, group_id, producer, connection, queue, consume
+):  # json_deserializer, json_callable_deserializer,
     if client_type == "no_serializer":
         consumer = connection.Consumer(queue, callbacks=[consume])
     elif client_type == "serializer_function":
@@ -102,8 +104,18 @@ def consumer(group_id, producer, json_deserializer, json_callable_deserializer, 
 
 
 @pytest.fixture
-def consume(body, message):
-    message.ack()
+def consume(events):
+    def _consume(body, message):
+        breakpoint()
+        message.ack()
+        events.append({"body": body, "routing_key": message.delivery_info["routing_key"]})
+
+    return _consume
+
+
+@pytest.fixture
+def events():
+    return []
 
 
 @pytest.fixture
@@ -185,10 +197,8 @@ def send_producer_message(producer, exchange, queue):
 def get_consumer_record(send_producer_message, connection, consumer):
     def _test():
         send_producer_message()
-        while True:
-            events = connection.drain_events()
 
-        assert events
+        connection.drain_events(timeout=5)
 
     return _test
 
@@ -208,7 +218,7 @@ def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
     return ret
 
 
-# @transient_function_wrapper(kombu.consumer.group, "KafkaConsumer.__next__")
+# @transient_function_wrapper(kombu.consumer.group, "Consumer.__next__")
 ## Place transient wrapper underneath instrumentation
 # def cache_kombu_consumer_headers(wrapped, instance, args, kwargs):
 #    record = wrapped(*args, **kwargs)
