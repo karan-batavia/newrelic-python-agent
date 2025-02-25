@@ -14,11 +14,7 @@
 
 import pytest
 
-# from conftest import cache_kombu_consumer_headers
 from testing_support.fixtures import reset_core_stats_engine, validate_attributes
-from testing_support.validators.validate_distributed_trace_accepted import (
-    validate_distributed_trace_accepted,
-)
 from testing_support.validators.validate_error_event_attributes_outside_transaction import (
     validate_error_event_attributes_outside_transaction,
 )
@@ -31,6 +27,7 @@ from testing_support.validators.validate_transaction_errors import (
 from testing_support.validators.validate_transaction_metrics import (
     validate_transaction_metrics,
 )
+from newrelic.common.package_version_utils import get_package_version
 
 from newrelic.api.background_task import background_task
 from newrelic.api.transaction import end_of_transaction
@@ -39,11 +36,11 @@ from newrelic.common.object_names import callable_name
 
 def test_custom_metrics(get_consumer_record, events):  # , expected_broker_metrics):
     @validate_transaction_metrics(
-        f"Named/exchange",
+        "Named/exchange",
         group="Message/Kombu/Exchange",
         custom_metrics=[
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Bytes", 1),
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Messages", 1),
+            ("Message/Kombu/Exchange/Named/exchange/Received/Bytes", 1),
+            ("Message/Kombu/Exchange/Named/exchange/Received/Messages", 1),
         ],
         # + expected_broker_metrics,
         background_task=True,
@@ -67,17 +64,19 @@ def test_multiple_transactions(get_consumer_record):
     _test()
 
 
-def test_custom_metrics_on_existing_transaction(get_consumer_record, expected_broker_metrics):
-    from kafka.version import __version__ as version
+def test_custom_metrics_on_existing_transaction(
+    get_consumer_record,
+):  # , expected_broker_metrics):
+    version = get_package_version("kombu")
 
     @validate_transaction_metrics(
         "test_consumer:test_custom_metrics_on_existing_transaction.<locals>._test",
         custom_metrics=[
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Bytes", 1),
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Messages", 1),
-            (f"Python/MessageBroker/Kombu-Python/{version}", 1),
-        ]
-        + expected_broker_metrics,
+            ("Message/Kombu/Exchange/Named/exchange/Received/Bytes", 1),
+            ("Message/Kombu/Exchange/Named/exchange/Received/Messages", 1),
+            (f"Python/MessageBroker/Kombu/{version}", 1),
+        ],
+        # + expected_broker_metrics,
         background_task=True,
     )
     @validate_transaction_count(1)
@@ -88,13 +87,14 @@ def test_custom_metrics_on_existing_transaction(get_consumer_record, expected_br
     _test()
 
 
-def test_custom_metrics_inactive_transaction(get_consumer_record, expected_missing_broker_metrics):
-
+def test_custom_metrics_inactive_transaction(
+    get_consumer_record,
+):  # , expected_missing_broker_metrics):
     @validate_transaction_metrics(
         "test_consumer:test_custom_metrics_inactive_transaction.<locals>._test",
         custom_metrics=[
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Bytes", None),
-            (f"Message/Kombu/Exchange/Named/exchange/Received/Messages", None),
+            ("Message/Kombu/Exchange/Named/exchange/Received/Bytes", None),
+            ("Message/Kombu/Exchange/Named/exchange/Received/Messages", None),
         ],
         # + expected_missing_broker_metrics,
         background_task=True,
@@ -109,23 +109,30 @@ def test_custom_metrics_inactive_transaction(get_consumer_record, expected_missi
 
 
 def test_agent_attributes(get_consumer_record):
-    @validate_attributes("agent", ["kafka.consume.client_id", "kafka.consume.byteCount"])
+    @validate_attributes(
+        "agent", ["kombu.consume.channel_id", "kombu.consume.byteCount"]
+    )
     def _test():
         get_consumer_record()
 
     _test()
 
 
-def test_consumer_errors(get_consumer_record, consumer_next_raises):
+def test_consumer_errors(get_consumer_record_error, consumer_next_raises):
     exc_class = RuntimeError
 
     @reset_core_stats_engine()
     @validate_error_event_attributes_outside_transaction(
-        num_errors=1, exact_attrs={"intrinsic": {"error.class": callable_name(exc_class)}, "agent": {}, "user": {}}
+        num_errors=1,
+        exact_attrs={
+            "intrinsic": {"error.class": callable_name(exc_class)},
+            "agent": {},
+            "user": {},
+        },
     )
     def _test():
         with pytest.raises(exc_class):
-            get_consumer_record()
+            get_consumer_record_error()
 
     _test()
 
@@ -139,45 +146,30 @@ def test_consumer_handled_errors_not_recorded(get_consumer_record):
     _test()
 
 
-def test_distributed_tracing_headers(topic, producer, consumer, serialize, expected_broker_metrics):
+def test_distributed_tracing_headers(
+    send_producer_message, consumer_connection, consumer_validate_dt
+):  # , expected_broker_metrics):
     # Produce the messages inside a transaction, making sure to close it.
     @background_task()
     def _produce():
-        producer.send(topic, key=serialize("bar"), value=serialize({"foo": 1}))
-        producer.flush()
+        send_producer_message()
 
     @validate_transaction_metrics(
-        f"Named/exchange",
+        "Named/exchange",
         group="Message/Kombu/Exchange",
         rollup_metrics=[
             ("Supportability/DistributedTrace/AcceptPayload/Success", None),
             ("Supportability/TraceContext/Accept/Success", 1),
-        ]
-        + expected_broker_metrics,
+        ],
+        # + expected_broker_metrics,
         background_task=True,
     )
     @validate_transaction_count(1)
     def _consume():
-        consumer_iter = iter(consumer)
-
-        @validate_distributed_trace_accepted(transport_type="Kombu")
-        @cache_kombu_consumer_headers
         def _test():
-            # Start the transaction but don't exit it.
-            timeout = 10
-            attempts = 0
-            record = None
-            while not record and attempts < timeout:
-                try:
-                    record = next(consumer_iter)
-                except StopIteration:
-                    attempts += 1
+            consumer_connection.drain_events(timeout=5)
 
         _test()
-
-        # Exit the transaction.
-        with pytest.raises(StopIteration):
-            next(consumer_iter)
 
     _produce()
     _consume()

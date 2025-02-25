@@ -35,7 +35,9 @@ HEARTBEAT_SESSION_TIMEOUT = "MessageBroker/Kafka/Heartbeat/SessionTimeout"
 HEARTBEAT_POLL_TIMEOUT = "MessageBroker/Kafka/Heartbeat/PollTimeout"
 
 
-def _bind_send(topic, value=None, key=None, headers=None, partition=None, timestamp_ms=None):
+def _bind_send(
+    topic, value=None, key=None, headers=None, partition=None, timestamp_ms=None
+):
     return topic, value, key, headers, partition, timestamp_ms
 
 
@@ -62,7 +64,10 @@ def wrap_Producer_publish(wrapped, instance, args, kwargs):
         source=wrapped,
         terminal=False,
     ):
-        dt_headers = {k: v.encode("utf-8") for k, v in MessageTrace.generate_request_headers(transaction)}
+        dt_headers = {
+            k: v.encode("utf-8")
+            for k, v in MessageTrace.generate_request_headers(transaction)
+        }
         # headers can be a list of tuples or a dict so convert to dict for consistency.
         if headers:
             dt_headers.update(headers)
@@ -80,13 +85,15 @@ def wrap_Producer_publish(wrapped, instance, args, kwargs):
 
 
 def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
-    if hasattr(instance, "_nr_transaction") and not instance._nr_transaction.stopped:
-        instance._nr_transaction.__exit__(*sys.exc_info())
+    # This will be the transaction if any that is created by this wrapper.
+    created_transaction = None
 
     bound_args = bind_args(wrapped, args, kwargs)
     message = bound_args["message"]
     if message:
-        # This iterator can be called either outside of a transaction, or
+        # In Kombu there is not iterator, instead there is a callback that
+        # is called inside wrapped.
+        # This callback can be called either outside of a transaction, or
         # within the context of an existing transaction.  There are 3
         # possibilities we need to handle: (Note that this is similar to
         # our Pika and Celery instrumentation)
@@ -96,7 +103,7 @@ def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
         #      If the end_of_transaction() or ignore_transaction() API
         #      calls have been invoked, this iterator may be called in the
         #      context of an inactive transaction. In this case, don't wrap
-        #      the iterator in any way. Just run the original iterator.
+        #      the callback in any way.
         #
         #   2. In an active transaction
         #
@@ -116,26 +123,28 @@ def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
         received_bytes = getattr(message, "body_received", None)
 
         transaction = current_transaction(active_only=False)
-
         if not transaction:
-            transaction = MessageTransaction(
+            created_transaction = MessageTransaction(
                 application=application_instance(),
                 library=library,
                 destination_type=destination_type,
                 destination_name=destination_name,
                 headers=dict(getattr(message, "headers", {})),
-                transport_type="Kombu",
+                transport_type="AMQP",
                 routing_key=key,
                 source=wrapped,
             )
-            instance._nr_transaction = transaction
-            transaction.__enter__()  # pylint: disable=C2801
+            created_transaction.__enter__()  # pylint: disable=C2801
 
             # Obtain consumer client_id to send up as agent attribute
             if hasattr(message, "channel") and hasattr(message.channel, "channel_id"):
                 channel_id = message.channel.channel_id
-                transaction._add_agent_attribute("kombu.consume.channel_id", channel_id)
-            transaction._add_agent_attribute("kombu.consume.byteCount", received_bytes)
+                created_transaction._add_agent_attribute(
+                    "kombu.consume.channel_id", channel_id
+                )
+            created_transaction._add_agent_attribute(
+                "kombu.consume.byteCount", received_bytes
+            )
 
         transaction = current_transaction()
         if transaction:  # If there is an active transaction now.
@@ -145,8 +154,12 @@ def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
             # was an existing one and not a message transaction, reproduce the naming logic here.
             group = f"Message/{library}/{destination_type}"
             name = f"Named/{destination_name}"
-            transaction.record_custom_metric(f"{group}/{name}/Received/Bytes", received_bytes)
-            transaction.record_custom_metric(f"{group}/{name}/Received/Messages", message_count)
+            transaction.record_custom_metric(
+                f"{group}/{name}/Received/Bytes", received_bytes
+            )
+            transaction.record_custom_metric(
+                f"{group}/{name}/Received/Messages", message_count
+            )
             # if hasattr(instance, "config"):
             #    for server_name in instance.config.get("bootstrap_servers", []):
             #        transaction.record_custom_metric(
@@ -156,7 +169,7 @@ def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
 
     try:
         return_val = wrapped(*args, **kwargs)
-    except Exception as e:
+    except Exception:
         if current_transaction():
             # Report error on existing transaction if there is one
             notice_error()
@@ -164,6 +177,9 @@ def wrap_consumer_recieve_callback(wrapped, instance, args, kwargs):
             # Report error on application
             notice_error(application=application_instance(activate=False))
         raise
+
+    if created_transaction and not created_transaction.stopped:
+        created_transaction.__exit__(*sys.exc_info())
 
     return return_val
 
@@ -175,7 +191,10 @@ def wrap_Producer_init(wrapped, instance, args, kwargs):
         instance, "Serialization/Key", "MessageBroker", get_config_key("key_serializer")
     )
     kwargs["value_serializer"] = wrap_serializer(
-        instance, "Serialization/Value", "MessageBroker", get_config_key("value_serializer")
+        instance,
+        "Serialization/Value",
+        "MessageBroker",
+        get_config_key("value_serializer"),
     )
 
     return wrapped(*args, **kwargs)
@@ -215,7 +234,9 @@ def wrap_serializer(client, serializer_name, group_prefix, serializer):
         else:
             # Find parent message trace to retrieve topic
             message_trace = current_trace()
-            while message_trace is not None and not isinstance(message_trace, MessageTrace):
+            while message_trace is not None and not isinstance(
+                message_trace, MessageTrace
+            ):
                 message_trace = message_trace.parent
             if message_trace:
                 topic = message_trace.destination_name
@@ -231,7 +252,9 @@ def wrap_serializer(client, serializer_name, group_prefix, serializer):
             # Do nothing
             return serializer
         elif isinstance(serializer, Serializer):
-            return NewRelicSerializerWrapper(serializer, group_prefix=group_prefix, serializer_name=serializer_name)
+            return NewRelicSerializerWrapper(
+                serializer, group_prefix=group_prefix, serializer_name=serializer_name
+            )
         else:
             # Wrap callable in wrapper
             return _wrap_serializer(serializer)
@@ -260,22 +283,34 @@ def instrument_kombu_messaging(module):
         # wrap_function_wrapper(module, "Producer.__init__", wrap_Producer_init)
         wrap_function_wrapper(module, "Producer.publish", wrap_Producer_publish)
     if hasattr(module, "Consumer"):
-        wrap_function_wrapper(module, "Consumer._receive_callback", wrap_consumer_recieve_callback)
+        wrap_function_wrapper(
+            module, "Consumer._receive_callback", wrap_consumer_recieve_callback
+        )
 
 
 def instrument_kombu_heartbeat(module):
     if hasattr(module, "Heartbeat"):
         if hasattr(module.Heartbeat, "poll"):
-            wrap_function_wrapper(module, "Heartbeat.poll", metric_wrapper(HEARTBEAT_POLL))
+            wrap_function_wrapper(
+                module, "Heartbeat.poll", metric_wrapper(HEARTBEAT_POLL)
+            )
 
         if hasattr(module.Heartbeat, "fail_heartbeat"):
-            wrap_function_wrapper(module, "Heartbeat.fail_heartbeat", metric_wrapper(HEARTBEAT_FAIL))
+            wrap_function_wrapper(
+                module, "Heartbeat.fail_heartbeat", metric_wrapper(HEARTBEAT_FAIL)
+            )
 
         if hasattr(module.Heartbeat, "sent_heartbeat"):
-            wrap_function_wrapper(module, "Heartbeat.sent_heartbeat", metric_wrapper(HEARTBEAT_SENT))
+            wrap_function_wrapper(
+                module, "Heartbeat.sent_heartbeat", metric_wrapper(HEARTBEAT_SENT)
+            )
 
         if hasattr(module.Heartbeat, "received_heartbeat"):
-            wrap_function_wrapper(module, "Heartbeat.received_heartbeat", metric_wrapper(HEARTBEAT_RECEIVE))
+            wrap_function_wrapper(
+                module,
+                "Heartbeat.received_heartbeat",
+                metric_wrapper(HEARTBEAT_RECEIVE),
+            )
 
         if hasattr(module.Heartbeat, "session_timeout_expired"):
             wrap_function_wrapper(
@@ -286,5 +321,7 @@ def instrument_kombu_heartbeat(module):
 
         if hasattr(module.Heartbeat, "poll_timeout_expired"):
             wrap_function_wrapper(
-                module, "Heartbeat.poll_timeout_expired", metric_wrapper(HEARTBEAT_POLL_TIMEOUT, check_result=True)
+                module,
+                "Heartbeat.poll_timeout_expired",
+                metric_wrapper(HEARTBEAT_POLL_TIMEOUT, check_result=True),
             )

@@ -23,6 +23,9 @@ from testing_support.fixtures import (  # noqa: F401; pylint: disable=W0611
     collector_agent_registration_fixture,
     collector_available_fixture,
 )
+from testing_support.validators.validate_distributed_trace_accepted import (
+    validate_distributed_trace_accepted,
+)
 
 from newrelic.api.transaction import current_transaction
 from newrelic.common.object_wrapper import transient_function_wrapper
@@ -32,7 +35,13 @@ DB_SETTINGS = rabbitmq_settings()[0]
 
 
 @pytest.fixture(scope="session")
-def connection():
+def producer_connection():
+    with kombu.Connection(DB_SETTINGS["host"]) as conn:
+        yield conn
+
+
+@pytest.fixture(scope="session")
+def consumer_connection():
     with kombu.Connection(DB_SETTINGS["host"]) as conn:
         yield conn
 
@@ -54,7 +63,10 @@ collector_agent_registration = collector_agent_registration_fixture(
 
 
 @pytest.fixture(
-    scope="session", params=["no_serializer"]  # , "serializer_function", "callable_object", "serializer_object"]
+    scope="session",
+    params=[
+        "no_serializer"
+    ],  # , "serializer_function", "callable_object", "serializer_object"]
 )
 def client_type(request):
     return request.param
@@ -67,17 +79,19 @@ def skip_if_not_serializing(client_type):
 
 
 @pytest.fixture(scope="function")
-def producer(client_type, connection):  # json_serializer, json_callable_serializer, connection):
+def producer(
+    client_type, producer_connection
+):  # json_serializer, json_callable_serializer, connection):
     if client_type == "no_serializer":
-        producer = connection.Producer()
+        producer = producer_connection.Producer()
     elif client_type == "serializer_function":
-        producer = connection.Producer(serializer="json")
+        producer = producer_connection.Producer(serializer="json")
     elif client_type == "callable_object":
-        producer = connection.Producer(
+        producer = producer_connection.Producer(
             serializer=lambda v: json.dumps(v).encode("utf-8") if v else None,
         )
     elif client_type == "serializer_object":
-        producer = connection.Producer(
+        producer = producer_connection.Producer(
             serializer=json_serializer,
         )
 
@@ -86,18 +100,56 @@ def producer(client_type, connection):  # json_serializer, json_callable_seriali
 
 @pytest.fixture(scope="function")
 def consumer(
-    client_type, group_id, producer, connection, queue, consume
+    client_type, group_id, producer, consumer_connection, queue, consume
 ):  # json_deserializer, json_callable_deserializer,
     if client_type == "no_serializer":
-        consumer = connection.Consumer(queue, callbacks=[consume])
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume])
     elif client_type == "serializer_function":
-        consumer = connection.Consumer(queue, callbacks=[consume])
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume])
         #    key_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
     elif client_type == "callable_object":
-        consumer = connection.Consumer(queue, callbacks=[consume])
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume])
         #    key_deserializer=json_callable_deserializer,
     elif client_type == "serializer_object":
-        consumer = connection.Consumer(queue, callbacks=[consume])
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume])
+        #    key_deserializer=json_deserializer,
+    with consumer as con:
+        yield con
+
+
+@pytest.fixture(scope="function")
+def consumer_callback_error(
+    client_type, group_id, producer, consumer_connection, queue, consume_error
+):  # json_deserializer, json_callable_deserializer,
+    if client_type == "no_serializer":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_error])
+    elif client_type == "serializer_function":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_error])
+        #    key_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
+    elif client_type == "callable_object":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_error])
+        #    key_deserializer=json_callable_deserializer,
+    elif client_type == "serializer_object":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_error])
+        #    key_deserializer=json_deserializer,
+    with consumer as con:
+        yield con
+
+
+@pytest.fixture(scope="function")
+def consumer_validate_dt(
+    client_type, group_id, producer, consumer_connection, queue, consume_validate_dt
+):  # json_deserializer, json_callable_deserializer,
+    if client_type == "no_serializer":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_validate_dt])
+    elif client_type == "serializer_function":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_validate_dt])
+        #    key_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
+    elif client_type == "callable_object":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_validate_dt])
+        #    key_deserializer=json_callable_deserializer,
+    elif client_type == "serializer_object":
+        consumer = consumer_connection.Consumer(queue, callbacks=[consume_validate_dt])
         #    key_deserializer=json_deserializer,
     with consumer as con:
         yield con
@@ -106,9 +158,38 @@ def consumer(
 @pytest.fixture
 def consume(events):
     def _consume(body, message):
-        breakpoint()
         message.ack()
-        events.append({"body": body, "routing_key": message.delivery_info["routing_key"]})
+        events.append(
+            {"body": body, "routing_key": message.delivery_info["routing_key"]}
+        )
+
+    return _consume
+
+
+@pytest.fixture
+def consume_error(events):
+    def _consume(body, message):
+        message.ack()
+        events.append(
+            {"body": body, "routing_key": message.delivery_info["routing_key"]}
+        )
+        raise RuntimeError("Error in consumer callback")
+
+    return _consume
+
+
+@pytest.fixture
+def consume_validate_dt(events):
+    @validate_distributed_trace_accepted(transport_type="AMQP")
+    def _consume(body, message):
+        # Capture headers to validate dt headers.
+        txn = current_transaction()
+        txn._test_request_headers = message.headers
+
+        message.ack()
+        events.append(
+            {"body": body, "routing_key": message.delivery_info["routing_key"]}
+        )
 
     return _consume
 
@@ -188,17 +269,31 @@ def group_id():
 @pytest.fixture
 def send_producer_message(producer, exchange, queue):
     def _test():
-        producer.publish({"foo": 1}, exchange=exchange, routing_key="bar", declare=[queue])
+        producer.publish(
+            {"foo": 1}, exchange=exchange, routing_key="bar", declare=[queue]
+        )
 
     return _test
 
 
 @pytest.fixture
-def get_consumer_record(send_producer_message, connection, consumer):
+def get_consumer_record(send_producer_message, consumer_connection, consumer):
     def _test():
         send_producer_message()
 
-        connection.drain_events(timeout=5)
+        consumer_connection.drain_events(timeout=5)
+
+    return _test
+
+
+@pytest.fixture
+def get_consumer_record_error(
+    send_producer_message, consumer_connection, consumer_callback_error
+):
+    def _test():
+        send_producer_message()
+
+        consumer_connection.drain_events(timeout=5)
 
     return _test
 
@@ -218,7 +313,7 @@ def cache_kombu_producer_headers(wrapped, instance, args, kwargs):
     return ret
 
 
-# @transient_function_wrapper(kombu.consumer.group, "Consumer.__next__")
+# @transient_function_wrapper(messaging, "Consumer._receive_callback")
 ## Place transient wrapper underneath instrumentation
 # def cache_kombu_consumer_headers(wrapped, instance, args, kwargs):
 #    record = wrapped(*args, **kwargs)
